@@ -3,12 +3,13 @@
 use std::sync::atomic::Ordering::*;
 use std::ptr::NonNull;
 
+use crate::Arena;
 use crate::block::Block;
 
 /// A reference-counting pointer to `T` in the arena
 ///
 /// The type `ArenaArc<T>` provides shared ownership of a value of
-/// type `T` in the arena.  
+/// type `T` in the arena.
 /// Invoking [`Clone`] on `ArenaArc` produces a new `ArenaArc`
 /// instance, which points to the same value, while increasing a
 /// reference count.
@@ -114,6 +115,20 @@ impl<T> ArenaArc<T> {
         counter_ref.store(1, Relaxed);
 
         ArenaArc { block }
+    }
+}
+
+impl<T> ArenaArc<T> where T: Clone {
+    pub fn make_mut<'a>(arena: &Arena<T>, this: &'a mut ArenaArc<T>) -> &'a mut T {
+        let counter_ref = &unsafe { this.block.as_ref() }.counter;
+
+        if counter_ref.compare_exchange(1, 0, Acquire, Relaxed).is_err() {
+            *this = arena.alloc_arc((**this).clone());
+        } else {
+            counter_ref.store(1, Release);
+        }
+
+        unsafe { &mut *this.block.as_mut().value.get_mut() }
     }
 }
 
