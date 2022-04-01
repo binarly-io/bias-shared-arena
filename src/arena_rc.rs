@@ -1,7 +1,7 @@
 
 use std::ptr::NonNull;
 
-use crate::block::Block;
+use crate::{block::Block, Arena};
 
 /// A single threaded reference-counting pointer to `T` in the arena.  
 ///
@@ -142,6 +142,19 @@ impl<T> std::ops::Deref for ArenaRc<T> {
     /// ```
     fn deref(&self) -> &T {
         unsafe { &*self.block.as_ref().value.get() }
+    }
+}
+
+impl<T> ArenaRc<T> where T: Clone {
+    pub fn make_mut<'a>(arena: &Arena<T>, this: &'a mut ArenaRc<T>) -> &'a mut T {
+        let counter_mut = unsafe { &mut *this.block.as_ptr() }.counter.get_mut();
+
+        if *counter_mut > 1 {
+            *counter_mut -= 1;
+            *this = arena.alloc_rc((**this).clone());
+        }
+
+        unsafe { &mut *this.block.as_mut().value.get_mut() }
     }
 }
 
