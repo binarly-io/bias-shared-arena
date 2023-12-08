@@ -1,10 +1,8 @@
-
-
-use std::sync::atomic::Ordering::*;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering::*;
 
-use crate::Arena;
 use crate::block::Block;
+use crate::Arena;
 
 /// A reference-counting pointer to `T` in the arena
 ///
@@ -110,7 +108,7 @@ impl<T> ArenaArc<T> {
         // but we check, just in case something went wrong
 
         let counter = counter_ref.load(Relaxed);
-        assert!(counter == 0, "PoolArc: Counter not zero {}", counter);
+        debug_assert!(counter == 0, "PoolArc: Counter not zero {}", counter);
 
         counter_ref.store(1, Relaxed);
 
@@ -118,17 +116,33 @@ impl<T> ArenaArc<T> {
     }
 }
 
-impl<T> ArenaArc<T> where T: Clone {
+impl<T> ArenaArc<T>
+where
+    T: Clone,
+{
     pub fn make_mut<'a>(arena: &Arena<T>, this: &'a mut ArenaArc<T>) -> &'a mut T {
         let counter_ref = &unsafe { this.block.as_ref() }.counter;
 
-        if counter_ref.compare_exchange(1, 0, Acquire, Relaxed).is_err() {
+        if counter_ref
+            .compare_exchange(1, 0, Acquire, Relaxed)
+            .is_err()
+        {
             *this = arena.alloc_arc((**this).clone());
         } else {
             counter_ref.store(1, Release);
         }
 
         unsafe { &mut *this.block.as_mut().value.get_mut() }
+    }
+
+    pub fn into_raw(self) -> *mut Block<T> {
+        self.block.as_ptr()
+    }
+
+    pub unsafe fn from_raw(ptr: *mut Block<T>) -> Option<Self> {
+        Some(Self {
+            block: NonNull::new(ptr)?,
+        })
     }
 }
 
@@ -149,11 +163,9 @@ impl<T> Clone for ArenaArc<T> {
 
         let old = counter_ref.fetch_add(1, Relaxed);
 
-        assert!(old < isize::max_value() as usize);
+        debug_assert!(old < isize::max_value() as usize);
 
-        ArenaArc {
-            block: self.block
-        }
+        ArenaArc { block: self.block }
     }
 }
 

@@ -1,13 +1,12 @@
-
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::*;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicUsize};
 use std::sync::Arc;
 
-use crate::common::BLOCK_PER_PAGE;
 use crate::block::Block;
-use crate::page::shared_arena::{PageSharedArena, drop_page};
+use crate::common::BLOCK_PER_PAGE;
+use crate::page::shared_arena::{drop_page, PageSharedArena};
 use crate::{ArenaArc, ArenaBox, ArenaRc};
 
 /// An arena shareable across threads
@@ -53,7 +52,7 @@ unsafe impl<T: Sized> Sync for SharedArena<T> {}
 const DELAY_DROP_SHRINK: u16 = 10;
 
 struct WriterGuard<'a> {
-    writer: &'a AtomicBool
+    writer: &'a AtomicBool,
 }
 
 impl WriterGuard<'_> {
@@ -68,7 +67,7 @@ impl WriterGuard<'_> {
     fn new_blocking(writer: &AtomicBool) -> WriterGuard {
         loop {
             if !writer.swap(true, AcqRel) {
-                return WriterGuard { writer }
+                return WriterGuard { writer };
             }
             std::thread::yield_now();
         }
@@ -86,7 +85,7 @@ impl<T: Sized> SharedArena<T> {
         &self,
         npages: usize,
         first: NonNull<PageSharedArena<T>>,
-        mut last: NonNull<PageSharedArena<T>>
+        mut last: NonNull<PageSharedArena<T>>,
     ) {
         let first_ptr = first.as_ptr();
         let last_ref = unsafe { last.as_mut() };
@@ -100,22 +99,19 @@ impl<T: Sized> SharedArena<T> {
         let current = self.full_list.load(Relaxed);
         last_ref.next = AtomicPtr::new(current);
         let old = self.full_list.swap(first_ptr, AcqRel);
-        assert_eq!(current, old);
+        debug_assert_eq!(current, old);
 
         let current = self.free_list.load(Relaxed);
-        assert!(current.is_null(), "Arena.free isn't null");
+        debug_assert!(current.is_null(), "Arena.free isn't null");
 
         let old = self.free_list.swap(first_ptr, AcqRel);
-        assert!(old.is_null(), "Arena.free2 isn't null");
+        debug_assert!(old.is_null(), "Arena.free2 isn't null");
 
         self.npages.fetch_add(npages, Relaxed);
     }
 
     fn alloc_new_page(&self) {
-        let to_allocate = self.npages
-                              .load(Relaxed)
-                              .max(1)
-                              .min(900_000);
+        let to_allocate = self.npages.load(Relaxed).max(1).min(900_000);
 
         let (first, last) = PageSharedArena::make_list(to_allocate, &self.pending_free_list);
         self.put_pages_in_lists(to_allocate, first, last);
@@ -140,7 +136,6 @@ impl<T: Sized> SharedArena<T> {
     fn find_place(&self) -> NonNull<Block<T>> {
         loop {
             while let Some(page) = unsafe { self.free_list.load(Acquire).as_mut() } {
-
                 if let Some(block) = page.acquire_free_block() {
                     return block;
                 }
@@ -148,7 +143,11 @@ impl<T: Sized> SharedArena<T> {
                 // No free block on the page, we remove it from the free list
 
                 let next = page.next_free.load(Acquire);
-                if self.free_list.compare_exchange(page, next, AcqRel, Relaxed).is_ok() {
+                if self
+                    .free_list
+                    .compare_exchange(page, next, AcqRel, Relaxed)
+                    .is_ok()
+                {
                     // The page might be not full anymore since the call to
                     // acquire_free_block but that's fine because drops of
                     // an ArenaBox/Arc on that page will insert the page on
@@ -222,9 +221,7 @@ impl<T: Sized> SharedArena<T> {
     }
 
     fn take_pages_to_be_freed(&self) {
-        if let Some(to_free) = unsafe {
-            self.to_free.swap(std::ptr::null_mut(), AcqRel).as_mut()
-        } {
+        if let Some(to_free) = unsafe { self.to_free.swap(std::ptr::null_mut(), AcqRel).as_mut() } {
             let mut to_free = unsafe { Box::from_raw(to_free) };
 
             let npages = self.npages.load(Relaxed).max(1);
@@ -237,7 +234,7 @@ impl<T: Sized> SharedArena<T> {
             if truncate_at != 0 {
                 to_free.truncate(truncate_at);
                 let old = self.to_free.swap(Box::into_raw(to_free), Release);
-                assert!(old.is_null());
+                debug_assert!(old.is_null());
                 self.to_free_delay.store(0, Relaxed);
             } else {
                 self.to_free_delay.store(DELAY_DROP_SHRINK, Relaxed);
@@ -274,10 +271,9 @@ impl<T: Sized> SharedArena<T> {
             writer: AtomicBool::new(false),
             shrinking: AtomicBool::new(false),
             to_free: AtomicPtr::new(std::ptr::null_mut()),
-            to_free_delay: AtomicU16::new(DELAY_DROP_SHRINK)
+            to_free_delay: AtomicU16::new(DELAY_DROP_SHRINK),
         }
     }
-
 
     /// Constructs a new `SharedArena` capable of holding exactly 63 elements
     ///
@@ -329,7 +325,7 @@ impl<T: Sized> SharedArena<T> {
     ///
     /// ## Safety
     ///
-    /// It is the caller responsability to initialize properly the value.  
+    /// It is the caller responsability to initialize properly the value.
     /// `initializer` must return `&T`, this is a way to ensure that
     /// its parameter `&mut MaybeUninit<T>` has been "consumed".
     ///
@@ -372,7 +368,7 @@ impl<T: Sized> SharedArena<T> {
     /// [`MaybeUninit`]: https://doc.rust-lang.org/std/mem/union.MaybeUninit.html
     pub fn alloc_with<F>(&self, initializer: F) -> ArenaBox<T>
     where
-        F: Fn(&mut MaybeUninit<T>) -> &T
+        F: Fn(&mut MaybeUninit<T>) -> &T,
     {
         let block = self.find_place();
         let result = ArenaBox::new(block);
@@ -380,9 +376,8 @@ impl<T: Sized> SharedArena<T> {
         unsafe {
             let ptr = block.as_ref().value.get();
             let reference = initializer(&mut *(ptr as *mut std::mem::MaybeUninit<T>));
-            assert_eq!(
-                ptr as * const T,
-                reference as * const T,
+            debug_assert_eq!(
+                ptr as *const T, reference as *const T,
                 "`initializer` must return a reference of its parameter"
             );
         }
@@ -427,7 +422,7 @@ impl<T: Sized> SharedArena<T> {
     ///
     /// ## Safety
     ///
-    /// It is the caller responsability to initialize properly the value.  
+    /// It is the caller responsability to initialize properly the value.
     /// `initializer` must return `&T`, this is a way to ensure that
     /// its parameter `&mut MaybeUninit<T>` has been "consumed".
     ///
@@ -470,7 +465,7 @@ impl<T: Sized> SharedArena<T> {
     /// [`MaybeUninit`]: https://doc.rust-lang.org/std/mem/union.MaybeUninit.html
     pub fn alloc_arc_with<F>(&self, initializer: F) -> ArenaArc<T>
     where
-        F: Fn(&mut MaybeUninit<T>) -> &T
+        F: Fn(&mut MaybeUninit<T>) -> &T,
     {
         let block = self.find_place();
         let result = ArenaArc::new(block);
@@ -479,9 +474,8 @@ impl<T: Sized> SharedArena<T> {
             let ptr = block.as_ref().value.get();
             let reference = initializer(&mut *(ptr as *mut std::mem::MaybeUninit<T>));
 
-            assert_eq!(
-                ptr as * const T,
-                reference as * const T,
+            debug_assert_eq!(
+                ptr as *const T, reference as *const T,
                 "`initializer` must return a reference of its parameter"
             );
         }
@@ -523,7 +517,7 @@ impl<T: Sized> SharedArena<T> {
     ///
     /// ## Safety
     ///
-    /// It is the caller responsability to initialize properly the value.  
+    /// It is the caller responsability to initialize properly the value.
     /// `initializer` must return `&T`, this is a way to ensure that
     /// its parameter `&mut MaybeUninit<T>` has been "consumed".
     ///
@@ -566,7 +560,7 @@ impl<T: Sized> SharedArena<T> {
     /// [`MaybeUninit`]: https://doc.rust-lang.org/std/mem/union.MaybeUninit.html
     pub fn alloc_rc_with<F>(&self, initializer: F) -> ArenaRc<T>
     where
-        F: Fn(&mut MaybeUninit<T>) -> &T
+        F: Fn(&mut MaybeUninit<T>) -> &T,
     {
         let block = self.find_place();
         let result = ArenaRc::new(block);
@@ -574,9 +568,8 @@ impl<T: Sized> SharedArena<T> {
         unsafe {
             let ptr = block.as_ref().value.get();
             let reference = initializer(&mut *(ptr as *mut std::mem::MaybeUninit<T>));
-            assert_eq!(
-                ptr as * const T,
-                reference as * const T,
+            debug_assert_eq!(
+                ptr as *const T, reference as *const T,
                 "`initializer` must return a reference of its parameter"
             );
         }
@@ -587,7 +580,7 @@ impl<T: Sized> SharedArena<T> {
     /// Shrinks the capacity of the arena as much as possible.
     ///
     /// It will drop all pages that are unused (no Arena{Box,Arc,Rc}
-    /// points to it).  
+    /// points to it).
     /// If there is still one or more references to a page, the page
     /// won't be dropped.
     ///
@@ -597,7 +590,7 @@ impl<T: Sized> SharedArena<T> {
     /// The dedicated memory will be deallocated in an
     /// undetermined time in the future, not during the function call.
     /// While the time is not determined, it's guarantee that it will
-    /// be deallocated.  
+    /// be deallocated.
     /// `shrink_to_fit` on `Arena` and `Pool` don't have this behavior.
     ///
     /// Note that if `SharedArena` becomes full and one of the alloc_*
@@ -631,7 +624,8 @@ impl<T: Sized> SharedArena<T> {
 
         let _guard = WriterGuard::new_blocking(&self.writer);
 
-        let mut current: &AtomicPtr<PageSharedArena<T>> = &AtomicPtr::new(self.free_list.swap(std::ptr::null_mut(), AcqRel));
+        let mut current: &AtomicPtr<PageSharedArena<T>> =
+            &AtomicPtr::new(self.free_list.swap(std::ptr::null_mut(), AcqRel));
         let start = current;
 
         // let narenas = Arc::strong_count(&self.pending_free_list);
@@ -649,9 +643,15 @@ impl<T: Sized> SharedArena<T> {
             let next_value = next.load(Acquire);
 
             if current_value.bitfield.load(Acquire) == !0 {
-                if current.compare_exchange(
-                    current_value as *const _ as *mut _, next_value, AcqRel, Relaxed
-                ).is_ok() {
+                if current
+                    .compare_exchange(
+                        current_value as *const _ as *mut _,
+                        next_value,
+                        AcqRel,
+                        Relaxed,
+                    )
+                    .is_ok()
+                {
                     // current_value.in_free_list.store(false, Release);
                     let ptr = current_value as *const _ as *mut PageSharedArena<T>;
                     to_drop.push(NonNull::new(ptr).unwrap());
@@ -677,9 +677,14 @@ impl<T: Sized> SharedArena<T> {
             let next_value = next.load(Relaxed);
 
             if to_drop.contains(&ptr) {
-                current.compare_exchange(
-                    current_value as *const _ as *mut _, next_value, AcqRel, Relaxed
-                ).expect("Something went wrong in shrinking.");
+                current
+                    .compare_exchange(
+                        current_value as *const _ as *mut _,
+                        next_value,
+                        AcqRel,
+                        Relaxed,
+                    )
+                    .expect("Something went wrong in shrinking.");
             } else {
                 current = next;
             }
@@ -689,19 +694,21 @@ impl<T: Sized> SharedArena<T> {
 
         if nfreed != 0 {
             self.to_free_delay.store(0, Release);
-            if let Some(to_free) = unsafe { self.to_free.swap(std::ptr::null_mut(), AcqRel).as_mut() } {
+            if let Some(to_free) =
+                unsafe { self.to_free.swap(std::ptr::null_mut(), AcqRel).as_mut() }
+            {
                 to_free.append(&mut to_drop);
                 let old = self.to_free.swap(to_free, AcqRel);
-                assert!(old.is_null());
+                debug_assert!(old.is_null());
             } else {
                 let ptr = Box::new(to_drop);
                 let old = self.to_free.swap(Box::into_raw(ptr), AcqRel);
-                assert!(old.is_null());
+                debug_assert!(old.is_null());
             }
         }
 
         let old = self.free_list.swap(start.load(Relaxed), Release);
-        assert!(old.is_null(), "OLD NOT NULL");
+        debug_assert!(old.is_null(), "OLD NOT NULL");
 
         self.npages.fetch_sub(nfreed, Release);
 
@@ -748,7 +755,7 @@ impl<T: Sized> SharedArena<T> {
         (used, free)
     }
 
-    #[cfg(target_pointer_width = "64") ]
+    #[cfg(target_pointer_width = "64")]
     #[cfg(test)]
     pub(crate) fn size_lists(&self) -> (usize, usize, usize) {
         let mut next = self.full_list.load(Relaxed);
@@ -851,7 +858,7 @@ impl<T> std::fmt::Debug for SharedArena<T> {
             let used = next_ref.bitfield.load(Relaxed).count_zeros() as usize;
             vec.push(Page {
                 used,
-                free: BLOCK_PER_PAGE - used
+                free: BLOCK_PER_PAGE - used,
             });
 
             next = next_ref.next.load(Relaxed);
@@ -861,11 +868,11 @@ impl<T> std::fmt::Debug for SharedArena<T> {
         let blocks_free: usize = vec.iter().map(|p| p.free).sum();
 
         f.debug_struct("SharedArena")
-         .field("blocks_free", &blocks_free)
-         .field("blocks_used", &blocks_used)
-         .field("npages", &npages)
-         .field("pages", &vec)
-         .finish()
+            .field("blocks_free", &blocks_free)
+            .field("blocks_used", &blocks_used)
+            .field("npages", &npages)
+            .field("pages", &vec)
+            .finish()
     }
 }
 
@@ -902,7 +909,7 @@ mod tests {
     use std::mem::MaybeUninit;
     use std::ptr;
 
-    #[cfg(target_pointer_width = "64") ]
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn arena_shrink() {
         let arena = SharedArena::<usize>::with_capacity(1000);
@@ -911,7 +918,7 @@ mod tests {
         assert_eq!(arena.stats(), (0, 0));
     }
 
-    #[cfg(target_pointer_width = "64") ]
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn arena_shrink2() {
         let arena = SharedArena::<usize>::with_capacity(1000);
@@ -940,7 +947,7 @@ mod tests {
         assert_eq!(arena.stats(), (2, 61));
     }
 
-    #[cfg(target_pointer_width = "64") ]
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn arena_size() {
         let arena = SharedArena::<usize>::with_capacity(1000);
@@ -1100,7 +1107,7 @@ mod tests {
     #[test]
     fn alloc_with_initializer() {
         struct MyData {
-            a: usize
+            a: usize,
         }
 
         fn initialize_data<'d>(uninit: &'d mut MaybeUninit<MyData>, source: &MyData) -> &'d MyData {
@@ -1114,21 +1121,15 @@ mod tests {
         let arena = SharedArena::<MyData>::new();
 
         let source = MyData { a: 101 };
-        let data = arena.alloc_with(|uninit| {
-            initialize_data(uninit, &source)
-        });
+        let data = arena.alloc_with(|uninit| initialize_data(uninit, &source));
         assert!(data.a == 101);
 
         let source = MyData { a: 102 };
-        let data = arena.alloc_rc_with(|uninit| {
-            initialize_data(uninit, &source)
-        });
+        let data = arena.alloc_rc_with(|uninit| initialize_data(uninit, &source));
         assert!(data.a == 102);
 
         let source = MyData { a: 103 };
-        let data = arena.alloc_arc_with(|uninit| {
-            initialize_data(uninit, &source)
-        });
+        let data = arena.alloc_arc_with(|uninit| initialize_data(uninit, &source));
         assert!(data.a == 103);
     }
 
@@ -1138,9 +1139,7 @@ mod tests {
         let arena = SharedArena::<usize>::new();
         const SOURCE: usize = 10;
 
-        let _ = arena.alloc_with(|_| {
-            &SOURCE
-        });
+        let _ = arena.alloc_with(|_| &SOURCE);
     } // grcov_ignore
 
     #[test]
@@ -1149,9 +1148,7 @@ mod tests {
         let arena = SharedArena::<usize>::new();
         const SOURCE: usize = 10;
 
-        let _ = arena.alloc_rc_with(|_| {
-            &SOURCE
-        });
+        let _ = arena.alloc_rc_with(|_| &SOURCE);
     } // grcov_ignore
 
     #[test]
@@ -1160,9 +1157,7 @@ mod tests {
         let arena = SharedArena::<usize>::new();
         const SOURCE: usize = 10;
 
-        let _ = arena.alloc_arc_with(|_| {
-            &SOURCE
-        });
+        let _ = arena.alloc_arc_with(|_| &SOURCE);
     } // grcov_ignore
 
     #[test]
@@ -1272,10 +1267,10 @@ mod tests {
         for _ in 0..nthreads {
             let c = barrier.clone();
             let arena = arena.clone();
-            handles.push(thread::spawn(move|| {
+            handles.push(thread::spawn(move || {
                 c.wait();
 
-               arena.shrink_to_fit();
+                arena.shrink_to_fit();
 
                 // let mut nshrink = 0;
 
@@ -1293,7 +1288,7 @@ mod tests {
                     }
                 }
 
-               // println!("NSHRINK: {}", nshrink);
+                // println!("NSHRINK: {}", nshrink);
             }));
         }
 

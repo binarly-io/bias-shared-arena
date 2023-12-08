@@ -1,7 +1,5 @@
-
-
-use std::sync::atomic::Ordering::*;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering::*;
 
 use crate::block::Block;
 
@@ -91,11 +89,21 @@ impl<T> ArenaBox<T> {
         // However dropping an ArenaBox is cheaper.
 
         let counter = counter_ref.load(Relaxed);
-        assert!(counter == 0, "ArenaBox: Counter not zero {}", counter);
+        debug_assert!(counter == 0, "ArenaBox: Counter not zero {}", counter);
 
         counter_ref.store(1, Relaxed);
 
         ArenaBox { block }
+    }
+
+    pub fn into_raw(self) -> *mut Block<T> {
+        self.block.as_ptr()
+    }
+
+    pub unsafe fn from_raw(ptr: *mut Block<T>) -> Option<Self> {
+        Some(Self {
+            block: NonNull::new(ptr)?,
+        })
     }
 }
 

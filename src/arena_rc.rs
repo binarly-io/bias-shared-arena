@@ -1,9 +1,8 @@
-
 use std::ptr::NonNull;
 
 use crate::{block::Block, Arena};
 
-/// A single threaded reference-counting pointer to `T` in the arena.  
+/// A single threaded reference-counting pointer to `T` in the arena.
 ///
 /// It cannot be sent between threads.
 ///
@@ -98,7 +97,11 @@ impl<T> ArenaRc<T> {
         // The bitfield indicated the block as free so it's guarantee to be zero,
         // but we check, just in case something went wrong
 
-        assert!(*counter_mut == 0, "ArenaRc: Counter not zero {}", counter_mut);
+        assert!(
+            *counter_mut == 0,
+            "ArenaRc: Counter not zero {}",
+            counter_mut
+        );
         *counter_mut = 1;
 
         ArenaRc { block }
@@ -121,12 +124,10 @@ impl<T> Clone for ArenaRc<T> {
         // ArenaRc is not Send, so we can make the counter non-atomic
         let counter_mut = unsafe { &mut *self.block.as_ptr() }.counter.get_mut();
 
-        assert!(*counter_mut < isize::max_value() as usize);
+        debug_assert!(*counter_mut < isize::max_value() as usize);
         *counter_mut += 1;
 
-        ArenaRc {
-            block: self.block
-        }
+        ArenaRc { block: self.block }
     }
 }
 
@@ -145,7 +146,10 @@ impl<T> std::ops::Deref for ArenaRc<T> {
     }
 }
 
-impl<T> ArenaRc<T> where T: Clone {
+impl<T> ArenaRc<T>
+where
+    T: Clone,
+{
     pub fn make_mut<'a>(arena: &Arena<T>, this: &'a mut ArenaRc<T>) -> &'a mut T {
         let counter_mut = unsafe { &mut *this.block.as_ptr() }.counter.get_mut();
 
@@ -155,6 +159,16 @@ impl<T> ArenaRc<T> where T: Clone {
         }
 
         unsafe { &mut *this.block.as_mut().value.get_mut() }
+    }
+
+    pub fn into_raw(self) -> *mut Block<T> {
+        self.block.as_ptr()
+    }
+
+    pub unsafe fn from_raw(ptr: *mut Block<T>) -> Option<Self> {
+        Some(Self {
+            block: NonNull::new(ptr)?,
+        })
     }
 }
 
