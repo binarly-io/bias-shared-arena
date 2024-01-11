@@ -28,7 +28,7 @@ bench = false
 static_assertions = "1"
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.5"
 
 [[bench]]
 name = "mempool"
